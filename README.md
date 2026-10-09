@@ -6,7 +6,7 @@ This repository contains **no game assets and no original executables**.
 
 ## Features
 
-- **All 24 circuits**: terrain, scenery, sky, distance lighting, animated decor billboards
+- **All 24 circuits**: terrain, scenery, sky, distance lighting, animated decor, billboards
 - **Original handling**: the vehicle physics, ported to a deterministic 28 ms fixed-step integer simulation
 - **Full races**: checkpoints, laps, lap times, ranking, respawn, wrong-way / missed-checkpoint warnings
 - **Opponents**: the original recorded ghosts (`.REC`), with rubber-banding and a random grid slot
