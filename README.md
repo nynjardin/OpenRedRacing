@@ -87,11 +87,22 @@ openbigred                          # the menus, as in the original
 openbigred C:\BIGRED                # the same, with the game folder named
 openbigred - DIRT1 JEEP             # straight into one race: a level and a vehicle
 openbigred - DIRT1 JEEP -PLAYERS=2  # the same race in split screen
+openbigred - -BORDERLESS -SIZE=1920x1080  # desktop-fullscreen; restores to a 1920x1080 window
 ```
 
 Arrow keys to drive, `Ctrl` and `Alt` for the vehicle's actions; gamepads work too. `+` / `-`
 change the resolution (320x200, 640x480, the window's own), `-RES=320|640|native` picks the
-starting one, and `-MUTE` silences everything.
+starting one, and `-MUTE` silences everything. `Alt+Enter` switches between the desktop-sized
+borderless view and a resizable window. `-BORDERLESS` and `-WINDOWED` choose the startup mode;
+`-SIZE=WIDTHxHEIGHT` chooses the window size. Sizes from 320x200 through 16384x16384 are
+accepted. Windowed mode keeps any aspect ratio the display supports.
+
+The chase view is the original game's camera. `-CAMERA=COMFORT` swaps in an independent
+comfort rig instead: damped horizontal and vertical follow, a stable horizon, gentle
+travel-heading alignment and separate object framing, so small hover movements and turning
+on the spot do not drag the eye around, and reversing keeps the current orbit side rather
+than swinging through 180 degrees. `C` still cycles the three chase distances and the cabin
+view; cabin, trackside and scripted fly-by views keep their own camera behaviour.
 
 ### The level viewer: `map_preview`
 
@@ -116,6 +127,15 @@ vehicle_preview --dump C:\BIGRED JEEP             # no window: what every face o
 ### Checks
 
 `ctest --test-dir build` runs the yes/no checks (they need the game files).
+
+On Windows x64, `tools/check_window_modes.ps1` checks native window bounds, borderless
+startup and an Alt+Enter round trip without global keyboard injection:
+
+```powershell
+./tools/check_window_modes.ps1 -Executable ./build/src/openbigred.exe -GameDirectory C:/BIGRED -OutputDirectory ./build/window-probe -IncludeMenu
+```
+
+It briefly shows its own test windows and writes results under the output directory.
 
 ## Documentation
 

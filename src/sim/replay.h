@@ -19,9 +19,12 @@ namespace bigred {
 struct ReplayTrack {
     // The file's 40-byte header.
     int type = 0;            // byte 0: 2 = 12-byte records, 3 = 14 (the 7th field below)
-    int colour = 0;          // byte 28 - the racer's colour, the mini-map dot  (HYPOTHESE)
+    // Bytes 28, 30 and 31 are the racer's person, logo and colour, as the original's loader
+    // reads them; a type-2 file takes its person and logo from its slot (N of `N.REC`) instead.
+    int character = 0;       // byte 28 - the recorded person/head
     int vehicle_index = 0;   // byte 29 / 2 - which of the level's `car` lines the ghost drives
-    int byte30 = 0, byte31 = 0;
+    int logo = 0;            // byte 30 - the recorded logo
+    int colour = 0;          // byte 31 - the team/body colour
     // x, y, z, pitch, yaw, roll deltas, then (type 3) the flame counter in the low byte of the
     // 7th field and the damage percent in its high byte - not deltas, absolute.
     std::vector<std::array<int16_t, 7>> records;
@@ -30,8 +33,9 @@ struct ReplayTrack {
 };
 
 // Parses `N.REC`. An empty track on anything that does not add up: a missing ghost must never
-// stop a race.
-ReplayTrack parse_replay(const Blob& rec);
+// stop a race. Supplying the original `N.REC` block lets the type-2 loader override match the
+// retail format; callers with a standalone stream may leave it unset.
+ReplayTrack parse_replay(const Blob& rec, int slot = -1);
 
 // The playback rates. The original starts every ghost at 0x200 per 28 ms tick (0x1000 = one
 // record, so one record every eight ticks - the rate the recorder ran at, i.e. real time), and

@@ -42,6 +42,7 @@
 #include "game/race_screen.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -53,6 +54,35 @@
 #include <vector>
 
 namespace {
+
+constexpr int kMinWindowWidth = 320;
+constexpr int kMinWindowHeight = 200;
+constexpr int kMaxWindowWidth = 16384;
+constexpr int kMaxWindowHeight = 16384;
+
+// `-SIZE=WIDTHxHEIGHT`, already upper-cased by main(). Keep the parse local and strict so a
+// launcher mistake fails before SDL creates a window or a game-data scan begins.
+bool parse_window_size(const std::string& arg, int& width, int& height) {
+    if (arg.rfind("-SIZE=", 0) != 0) return false;
+    const char* first = arg.data() + 6;
+    const char* last = arg.data() + arg.size();
+    const char* cross = std::find(first, last, 'X');
+    if (cross == first || cross == last || cross == last - 1) return false;
+
+    int parsed_width = 0;
+    int parsed_height = 0;
+    auto w = std::from_chars(first, cross, parsed_width);
+    auto h = std::from_chars(cross + 1, last, parsed_height);
+    if (w.ec != std::errc() || w.ptr != cross ||
+        h.ec != std::errc() || h.ptr != last ||
+        parsed_width < kMinWindowWidth || parsed_width > kMaxWindowWidth ||
+        parsed_height < kMinWindowHeight || parsed_height > kMaxWindowHeight) {
+        return false;
+    }
+    width = parsed_width;
+    height = parsed_height;
+    return true;
+}
 
 // `--list`: print every playable circuit and the cars it allows, one per line, as
 //
@@ -336,11 +366,16 @@ int main(int argc, char* argv[]) {
     std::string add_level_arg;
     // -HIDDEN: no window on screen, and muted - what a test run by CTest wants (src/CMakeLists.txt).
     bool hidden = false;
+    bool borderless = false;
+    int window_width = 1280;
+    int window_height = 720;
+    std::string bad_window_size;
     std::string net_join_addr;
     bool autodrive = false;
     bool spectate = false;    // -SPECTATE: the trackside cameras from the start
     bool fly_by = false;      // -FLYBY: the track's presentation fly-by (the VIEW button)
     bool mute = false;        // -MUTE: no sound, no music (a -SHOT run always is)
+    bool comfort_camera = false; // -CAMERA=COMFORT: the damped rig; CLASSIC (default) the original
     uint32_t quit_after = 0;
     std::string name_override;
     bool net_local = false;   // -NETLOCAL: 127.0.0.1 only, no firewall question
@@ -370,6 +405,14 @@ int main(int argc, char* argv[]) {
         else if (upper == "-SOLO" || upper == "--SOLO") solo = true;
         else if (upper.rfind("-PLACE=", 0) == 0) grid_place = std::atoi(upper.c_str() + 7) - 1;
         else if (upper == "-CABIN") start_in_cabin = true;
+        else if (upper.rfind("-CAMERA=", 0) == 0) {
+            const std::string mode = upper.substr(8);
+            if (mode != "COMFORT" && mode != "CLASSIC") {
+                std::fprintf(stderr, "Camera must be COMFORT or CLASSIC.\n");
+                return 1;
+            }
+            comfort_camera = mode == "COMFORT";
+        }
         else if (upper == "-RES=320" || upper == "-RES=320X200") display_mode = 0, display_mode_given = true;
         else if (upper == "-RES=640" || upper == "-RES=640X480") display_mode = 1, display_mode_given = true;
         else if (upper == "-RES=NATIVE") display_mode = bigred::kDefaultDisplayMode, display_mode_given = true;
@@ -387,6 +430,11 @@ int main(int argc, char* argv[]) {
         else if (upper == "-FLYBY") fly_by = true;
         else if (upper == "-MUTE") mute = true;
         else if (upper == "-HIDDEN") hidden = true;
+        else if (upper == "-BORDERLESS") borderless = true;
+        else if (upper == "-WINDOWED") borderless = false;
+        else if (upper.rfind("-SIZE=", 0) == 0) {
+            if (!parse_window_size(upper, window_width, window_height)) bad_window_size = a;
+        }
         else if (upper == "-NETLOCAL") net_local = true;
         else if (upper == "-NETGHOSTS") net_ghosts = true;
         else if (upper.rfind("-ENDAFTER=", 0) == 0) end_after = static_cast<uint32_t>(std::atoi(upper.c_str() + 10));
@@ -403,6 +451,13 @@ int main(int argc, char* argv[]) {
         else if (upper.rfind("-ADDLEVEL=", 0) == 0) add_level_arg = upper.substr(10);
         else args.push_back(std::move(a));
     }
+    if (!bad_window_size.empty()) {
+        std::fprintf(stderr,
+                     "Invalid %s: use -SIZE=WIDTHxHEIGHT with width 320..16384 and "
+                     "height 200..16384.\n",
+                     bad_window_size.c_str());
+        return 2;
+    }
     // `-` means "the default install", so the later arguments can be reached without
     // retyping the accented path - the convention physics_bench already uses, and the
     // reason it has it: a shell mangles the accent and the level never loads.
@@ -418,6 +473,10 @@ int main(int argc, char* argv[]) {
     bigred::App app;
     app.set_game_dir(game_dir);
     bigred::App::Options opts;
+    opts.width = window_width;
+    opts.height = window_height;
+    opts.borderless = borderless;
+    opts.comfort_camera = comfort_camera;
     opts.display_mode = display_mode;
     opts.hidden = !shot.empty() || hidden;
     opts.mute = mute || !shot.empty() || hidden;

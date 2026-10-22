@@ -35,14 +35,18 @@ int32_t mul_shift12(int32_t a, int32_t b) {
 
 } // namespace
 
-ReplayTrack parse_replay(const Blob& b) {
+ReplayTrack parse_replay(const Blob& b, int slot) {
     ReplayTrack t;
     if (b.size() < 40) return t;
     t.type = b[0];
-    t.colour = b[28];
+    t.character = b[28];
     t.vehicle_index = static_cast<int8_t>(b[29]) / 2;
-    t.byte30 = b[30];
-    t.byte31 = b[31];
+    t.logo = b[30];
+    t.colour = b[31];
+    if (t.type == 2 && slot >= 0) {
+        t.character = slot;
+        t.logo = slot;
+    }
     const int count = s16(b, 32) & 0xFFFF;
     const size_t rs = (t.type == 2) ? 12 : 14;      // as in the original: type 2 is the short form
     if (b.size() < 40 + static_cast<size_t>(count) * rs) return ReplayTrack();

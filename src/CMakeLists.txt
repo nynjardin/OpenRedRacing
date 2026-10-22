@@ -86,6 +86,7 @@ set(OPENBIGRED_WORLD_SOURCES
     audio/vehicle_audio.cpp
     formats/bigred_archive.cpp
     formats/game_files.cpp
+    formats/terrain_members.cpp
     formats/threedw.cpp
     formats/terrain.cpp
     formats/texture.cpp
@@ -101,6 +102,8 @@ set(OPENBIGRED_WORLD_SOURCES
     # The six drivers of CHARSCN.SCN: the menu shows one, a vehicle carries its head.
     scene/character_model.cpp
     scene/chase_camera.cpp
+    scene/comfort_camera.cpp
+    scene/camera_obstruction.cpp
     # The cabin view's dashboard: the `ndial` gauges drawn into the `dash` sheet.
     scene/dashboard.cpp
     scene/gate_overlay.cpp
@@ -167,6 +170,7 @@ add_executable(vehicle_preview
     vehicle_preview.cpp
     formats/bigred_archive.cpp
     formats/game_files.cpp
+    formats/terrain_members.cpp
     formats/localised_text.cpp   # the HUD's alphabet: interface_glyph
     formats/threedw.cpp
     render/gl_loader.cpp
@@ -195,6 +199,7 @@ endif()
 # REPEATED instead of rewritten from scratch every session.
 add_executable(physics_bench
     physics_bench.cpp
+    game/level_catalog.cpp
     ${OPENBIGRED_WORLD_SOURCES}
 )
 
@@ -255,7 +260,32 @@ foreach(tgt openbigred map_preview vehicle_preview physics_bench net_bench track
     )
 endforeach()
 
+add_executable(comfort_camera_test comfort_camera_test.cpp scene/comfort_camera.cpp)
+target_include_directories(comfort_camera_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(MINGW)
+    target_link_options(comfort_camera_test PRIVATE -static-libgcc -static-libstdc++ -static)
+endif()
+add_test(NAME comfort_camera COMMAND comfort_camera_test)
+add_test(NAME comfort_camera_obstruction COMMAND physics_bench - CHOPPER1 --bloc=COMFORT_CAMERA)
+set_tests_properties(comfort_camera_obstruction PROPERTIES TIMEOUT 30)
+
+add_executable(replay_metadata_test replay_metadata_test.cpp sim/replay.cpp sim/fixed.cpp)
+target_include_directories(replay_metadata_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(MINGW)
+    target_link_options(replay_metadata_test PRIVATE -static-libgcc -static-libstdc++ -static)
+endif()
+add_test(NAME replay_metadata COMMAND replay_metadata_test)
+
 # --- A6: checks that answer yes or no ----------------------------------------------------------
+
+# Container decoding checks need no game files, SDL window or renderer.
+add_executable(archive_validation_test archive_validation_test.cpp formats/bigred_archive.cpp)
+target_include_directories(archive_validation_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(MINGW)
+    target_link_options(archive_validation_test PRIVATE -static-libgcc -static-libstdc++ -static)
+endif()
+add_test(NAME archive_validation COMMAND archive_validation_test)
+
 # `ctest --test-dir build` (or `-R name` for one). They read the original game from the default
 # install, like every tool here (`-` = that install), and each one states what must come out.
 # ⚠️ A REFERENCE CHECKSUM CHANGES WITH ANY CHANGE TO THE SIMULATION. When one is meant to, the
@@ -287,8 +317,21 @@ set_tests_properties(net_bench PROPERTIES TIMEOUT 300)
 # The catalogue: every circuit's script read, the unplayable ones left out.
 add_test(NAME level_catalogue COMMAND openbigred --list WORKING_DIRECTORY ${OBR_TEST_DIR})
 set_tests_properties(level_catalogue PROPERTIES TIMEOUT 60
-                     PASS_REGULAR_EXPRESSION "DIRT1\t[A-Z0-9,]*JEEP"
-                     FAIL_REGULAR_EXPRESSION "RUF1")
+                     PASS_REGULAR_EXPRESSION "DIRT1\t[A-Z0-9,]*JEEP")
+
+add_executable(terrain_members_test terrain_members_test.cpp
+    formats/terrain_members.cpp formats/bigred_archive.cpp)
+target_include_directories(terrain_members_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(MINGW)
+    target_link_options(terrain_members_test PRIVATE -static-libgcc -static-libstdc++ -static)
+endif()
+add_test(NAME terrain_member_selection COMMAND terrain_members_test)
+if(OPENBIGRED_GAME_DIR)
+    add_test(NAME terrain_members_retail COMMAND terrain_members_test -)
+endif()
+add_test(NAME championship_rules COMMAND physics_bench - DIRT1 --bloc=CHAMPIONNAT
+         WORKING_DIRECTORY ${OBR_TEST_DIR})
+set_tests_properties(championship_rules PROPERTIES TIMEOUT 120)
 # A generated circuit can be driven: an autopilot laps a DIRT and a SNOW circuit in every vehicle
 # of the theme, and the lap is the RACE's own - the generated CHECKP lines fired in order.
 add_test(NAME generated_lap

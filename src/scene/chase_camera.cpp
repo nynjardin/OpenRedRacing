@@ -348,16 +348,20 @@ CameraView camera_view(const CameraState& prev, const CameraState& cur, float al
     const float yaw = jumped ? static_cast<float>(cur.yaw) : mix_angle(prev.yaw, cur.yaw);
     const float pitch = jumped ? static_cast<float>(cur.pitch) : mix_angle(prev.pitch, cur.pitch);
 
-    constexpr float kBamToRad = 6.283185307179586f / 65536.0f;
-    const float ya = yaw * kBamToRad, pa = pitch * kBamToRad;
+    return camera_view(CameraSample{gx, gy, gz, yaw, pitch}, map_w, render_scale);
+}
+
+CameraView camera_view(const CameraSample& sample, int map_w, float render_scale) {
+    constexpr double kBamToRad = 6.283185307179586 / 65536.0;
+    const double ya = sample.yaw * kBamToRad, pa = sample.pitch * kBamToRad;
     const float cp = std::cos(pa), sp = std::sin(pa);
 
     CameraView v;
     const float mirror_axis =
         static_cast<float>(map_w - 1) * static_cast<float>(kTerrainTexelWorldSize);
-    v.eye[0] = (mirror_axis - gx) * render_scale;
-    v.eye[1] = -gy * render_scale;
-    v.eye[2] = gz * render_scale;
+    v.eye[0] = static_cast<float>((mirror_axis - sample.x) * render_scale);
+    v.eye[1] = static_cast<float>(-sample.y * render_scale);
+    v.eye[2] = static_cast<float>(sample.z * render_scale);
 
     // Game axes: x = sin(yaw), z = cos(yaw), y = sin(pitch) with +Y DOWN. Render space mirrors
     // X and flips Y, which is exactly the transform the decor and the vehicle already use.

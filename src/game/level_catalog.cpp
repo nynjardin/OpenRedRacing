@@ -47,7 +47,7 @@ int level_max_racers(const std::string& name) {
     };
     static const Cap kCaps[] = {
         {"CHOPPER2", 6}, {"MOON2", 9}, {"SNOW3", 11},
-        // Not measured: the bench cannot load them (and neither can the game, today).
+        // Extra grid slots have not been measured on the rough-terrain courses.
         {"RUF1", 6}, {"RUF2", 6}, {"RUF3", 6},
     };
     for (const Cap& c : kCaps)
@@ -139,9 +139,8 @@ std::vector<LevelEntry> scan_levels_uncached(const std::string& game_dir) {
             continue; // not installed: silently not on the menu
         }
         const Archive& lev = *lev_archive;
-        // ⚠️ THE PLAYABILITY TEST, and it is not hypothetical: RUF1/2/3 ship WITHOUT their
-        // terrain (no MAP.MPH/MPC/COL), so they cannot be loaded at all. Offering them is
-        // offering three dead entries.
+        // game_archive resolves a complete terrain family to MAP.*. RUF1/2/3
+        // use the script-declared 1.*, 2.* and 3.* families in the retail files.
         if (lev.find("MAP.MPH") == lev.end() || lev.find("MAP.MPC") == lev.end() ||
             lev.find("MAP.COL") == lev.end()) {
             continue;

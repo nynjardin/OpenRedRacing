@@ -14,19 +14,35 @@ namespace bigred {
 namespace {
 
 Blob decompress_rle(const uint8_t* data, size_t size, uint32_t uncompressed_size) {
+    // Even the largest repeat emits at most 130 bytes per input byte.
+    // Reject impossible declarations before reserving their output buffer.
+    if (uint64_t(uncompressed_size) > uint64_t(size) * 130u)
+        throw std::runtime_error("RLE: advertised output cannot fit the compressed stream");
     Blob out;
     out.reserve(uncompressed_size);
+    const size_t output_capacity = uncompressed_size;
+    const auto require_output = [&](size_t count, const char* message) {
+        if (out.size() > output_capacity || count > output_capacity - out.size()) {
+            throw std::runtime_error(message);
+        }
+    };
     size_t i = 0;
     while (i < size) {
         uint8_t flag = data[i++];
         if (flag > 127) {
             int count = flag - 125;
             if (i >= size) throw std::runtime_error("RLE: truncated repeat run");
+            require_output(static_cast<size_t>(count),
+                           "RLE: repeat run exceeds advertised output size");
             out.insert(out.end(), static_cast<size_t>(count), data[i]);
             i += 1;
         } else {
             int count = flag + 1;
-            if (i + static_cast<size_t>(count) > size) throw std::runtime_error("RLE: truncated literal run");
+            if (static_cast<size_t>(count) > size - i) {
+                throw std::runtime_error("RLE: truncated literal run");
+            }
+            require_output(static_cast<size_t>(count),
+                           "RLE: literal run exceeds advertised output size");
             out.insert(out.end(), data + i, data + i + count);
             i += static_cast<size_t>(count);
         }
@@ -38,13 +54,24 @@ Blob decompress_rle(const uint8_t* data, size_t size, uint32_t uncompressed_size
 }
 
 Blob decompress_lzss(const uint8_t* data, size_t size, uint32_t uncompressed_size, int compression_level) {
+    if (compression_level < 2 || compression_level > 6) {
+        throw std::runtime_error("LZSS: unsupported compression type");
+    }
     const int offset_bits = 6 - compression_level;
     const int run_length_bits = 8 - offset_bits;
     const int max_run_length = (1 << run_length_bits) + 2;
     const int max_offset = (1 << (offset_bits + 8)) - 1;
 
+    if (uint64_t(uncompressed_size) > uint64_t(size) * uint64_t(max_run_length))
+        throw std::runtime_error("LZSS: advertised output cannot fit the compressed stream");
+
     Blob out(uncompressed_size);
     size_t out_len = 0;
+    const auto require_output = [&](size_t count, const char* message) {
+        if (out_len > out.size() || count > out.size() - out_len) {
+            throw std::runtime_error(message);
+        }
+    };
     // +1 vs. max_offset: the reference C implementation's wraparound check lets
     // circular_offset reach max_offset itself before wrapping - see tools/bigred_archive.py's
     // matching comment.
@@ -59,11 +86,12 @@ Blob decompress_lzss(const uint8_t* data, size_t size, uint32_t uncompressed_siz
             if ((flag >> bit) & 1) {
                 if (i >= n) throw std::runtime_error("LZSS: truncated literal");
                 uint8_t byte = data[i++];
+                require_output(1, "LZSS: literal exceeds advertised output size");
                 out[out_len++] = byte;
                 circular[circular_offset] = byte;
                 circular_offset = (circular_offset < max_offset) ? circular_offset + 1 : 0;
             } else {
-                if (i + 1 >= n) throw std::runtime_error("LZSS: truncated back-reference");
+                if (n - i < 2) throw std::runtime_error("LZSS: truncated back-reference");
                 uint8_t b0 = data[i];
                 uint8_t b1 = data[i + 1];
                 i += 2;
@@ -89,6 +117,8 @@ Blob decompress_lzss(const uint8_t* data, size_t size, uint32_t uncompressed_siz
 
                 if (offset < 0) throw std::runtime_error("LZSS: invalid offset");
                 if (run_length > max_run_length) throw std::runtime_error("LZSS: invalid run length");
+                require_output(static_cast<size_t>(run_length),
+                               "LZSS: back-reference exceeds advertised output size");
 
                 for (int r = 0; r < run_length; ++r) {
                     if (offset > max_offset || static_cast<size_t>(offset) >= out_len) {
@@ -115,6 +145,9 @@ Blob decompress_lzss(const uint8_t* data, size_t size, uint32_t uncompressed_siz
 
 std::unordered_map<std::string, Blob> unpack_bytes(const uint8_t* data, size_t size) {
     std::unordered_map<std::string, Blob> files;
+    if (data == nullptr && size != 0) {
+        throw std::runtime_error("archive: null data with non-zero size");
+    }
     size_t pos = 0;
     while (pos < size) {
         // Null-terminated filename.
@@ -125,7 +158,7 @@ std::unordered_map<std::string, Blob> unpack_bytes(const uint8_t* data, size_t s
         std::string filename(reinterpret_cast<const char*>(data + pos), end - pos);
         pos = end + 1;
 
-        if (pos + 9 > size) throw std::runtime_error("archive: truncated entry header for " + filename);
+        if (size - pos < 9) throw std::runtime_error("archive: truncated entry header for " + filename);
         uint32_t compressed_size, uncompressed_size;
         std::memcpy(&compressed_size, data + pos, 4);
         std::memcpy(&uncompressed_size, data + pos + 4, 4);
@@ -133,18 +166,33 @@ std::unordered_map<std::string, Blob> unpack_bytes(const uint8_t* data, size_t s
         uint8_t compression_type = data[pos];
         pos += 1;
 
-        if (pos + compressed_size > size) throw std::runtime_error("archive: truncated chunk for " + filename);
+        if (compression_type > 6) {
+            throw std::runtime_error("archive: unknown compression type " +
+                                     std::to_string(compression_type) + " for " + filename);
+        }
+        if (compressed_size > size - pos) {
+            throw std::runtime_error("archive: truncated chunk for " + filename);
+        }
         const uint8_t* chunk = data + pos;
         pos += compressed_size;
 
         if (compression_type == 0) {
+            if (compressed_size != uncompressed_size) {
+                throw std::runtime_error("archive: raw chunk size mismatch for " + filename);
+            }
             files[filename] = Blob(chunk, chunk + compressed_size);
-        } else if (compression_type == 1) {
-            files[filename] = decompress_rle(chunk, compressed_size, uncompressed_size);
-        } else if (compression_type > 1) {
-            files[filename] = decompress_lzss(chunk, compressed_size, uncompressed_size, compression_type);
         } else {
-            throw std::runtime_error("archive: unsupported compression type for " + filename);
+            try {
+                if (compression_type == 1) {
+                    files[filename] =
+                        decompress_rle(chunk, compressed_size, uncompressed_size);
+                } else {
+                    files[filename] =
+                        decompress_lzss(chunk, compressed_size, uncompressed_size, compression_type);
+                }
+            } catch (const std::runtime_error& error) {
+                throw std::runtime_error(filename + ": " + error.what());
+            }
         }
     }
     return files;

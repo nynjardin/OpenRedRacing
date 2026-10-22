@@ -62,7 +62,9 @@
 #include "sim/race_session.h"
 #include "sim/snapshot.h"
 #include "game/championship.h"
+#include "game/level_catalog.h"
 #include "game/split_layout.h"
+#include "scene/camera_obstruction.h"
 #include "scene/character_model.h"
 #include "formats/localised_text.h"
 #include "sim/replay.h"
@@ -1250,15 +1252,58 @@ int main(int argc, char* argv[]) {
 
         // CHAMPIONNAT - the championship's rule (game/championship.h) played against the
         // shipped TOURN.TXT: always first, always second, and "lose the first race of every
-        // round, win the rest". No race is driven; only the bookkeeping is under test.
+        // round, win the rest". No race is driven; only the bookkeeping is under test. This
+        // is also the CTest gate, so any mismatch must make the process fail.
         if (bloc("CHAMPIONNAT")) {
             bigred::TournCatalog cat;
             if (const bigred::Blob* txt = bigred::find_member(
                     *bigred::game_archive_or_empty(game_dir, "TOURN.WAP"), "TOURN.TXT"))
                 cat = bigred::parse_tourn_catalog(std::string(txt->begin(), txt->end()));
+
+            int failures = 0;
+            const auto check = [&](bool condition, const std::string& what) {
+                if (!condition) {
+                    std::printf("  FAIL %s\n", what.c_str());
+                    ++failures;
+                }
+                return condition;
+            };
+
+            // The catalogue is the authority for the 24 tournament circuits. RUF1/2/3
+            // are ordinary members of it; their map planes merely use the stems 1/2/3.
+            // Intersecting with scan_levels also excludes non-tournament menu extras such
+            // as CITY3 and TEST1 without hard-coding another circuit list here.
+            const std::vector<bigred::LevelEntry> scanned = bigred::scan_levels(game_dir);
+            std::set<std::string> scanned_names;
+            for (const bigred::LevelEntry& level : scanned) scanned_names.insert(level.name);
             std::vector<std::string> playable;
-            for (const bigred::TournTrack& t : cat.tracks)
-                if (t.level.rfind("RUF", 0) != 0) playable.push_back(t.level);
+            std::string missing;
+            for (const bigred::TournTrack& t : cat.tracks) {
+                if (scanned_names.count(t.level)) {
+                    playable.push_back(t.level);
+                } else {
+                    if (!missing.empty()) missing += ", ";
+                    missing += t.level;
+                }
+            }
+
+            check(cat.tracks.size() == 24, "TOURN.TXT declares exactly 24 tracks");
+            check(playable.size() == 24,
+                  "all 24 tournament tracks are playable" +
+                      (missing.empty() ? std::string() : " (missing " + missing + ")"));
+            if (!check(cat.rounds.size() == 7, "TOURN.TXT declares exactly 7 rounds"))
+                return 1;
+
+            static constexpr int expectedSize[7] = {3, 3, 4, 4, 4, 5, 1};
+            static constexpr int expectedNeed[7] = {1, 1, 2, 2, 2, 3, 1};
+            for (std::size_t r = 0; r < cat.rounds.size(); ++r) {
+                check(cat.rounds[r].levels.size() ==
+                          static_cast<std::size_t>(expectedSize[r]),
+                      "round " + std::to_string(r + 1) + " keeps its authored size");
+                check(cat.rounds[r].need == expectedNeed[r],
+                      "round " + std::to_string(r + 1) + " keeps its authored need");
+            }
+
             std::printf("CHAMPIONNAT %zu manche(s) :", cat.rounds.size());
             for (const bigred::TournRound& r : cat.rounds)
                 std::printf(" [%d: %zu circuit(s), need %d]", r.number, r.levels.size(), r.need);
@@ -1274,17 +1319,30 @@ int main(int argc, char* argv[]) {
                                     t ? text.text(t->view_text).substr(0, 60).c_str() : "?");
                     }
             }
-            auto play = [&](const char* label, auto place_of) {
+            // A transition is the one race that finishes a round, or the race that
+            // eliminates/champions the player. Continue outcomes are represented by the
+            // exact total race count.
+            auto play = [&](const char* label, auto place_of, int expectedRaces,
+                            int expectedRound, bool expectedWon,
+                            std::initializer_list<bigred::Championship::Outcome> expected) {
                 bigred::Championship c;
                 c.start(cat.rounds, playable);
                 int races = 0;
+                std::vector<bigred::Championship::Outcome> transitions;
                 while (!c.over() && races < 100) {
                     const std::vector<std::string> av = c.available();
                     if (av.empty()) break;
                     const int k = c.raced();
-                    c.record(av.front(), place_of(c.round(), k));
+                    const auto outcome = c.record(av.front(), place_of(c.round(), k));
+                    if (outcome != bigred::Championship::Outcome::Continue)
+                        transitions.push_back(outcome);
                     ++races;
                 }
+                const std::vector<bigred::Championship::Outcome> want(expected);
+                const bool ok = races == expectedRaces && c.round() == expectedRound &&
+                                c.won() == expectedWon && c.over() &&
+                                transitions == want;
+                check(ok, std::string(label) + " follows the authored outcome sequence");
                 std::printf("  %-34s %d course(s), manche %d/%d, %s\n", label, races,
                             c.round() + 1, c.rounds(),
                             c.won() ? "CHAMPION" : (c.over() ? "elimine" : "EN COURS (bloque ?)"));
@@ -1292,7 +1350,9 @@ int main(int argc, char* argv[]) {
             {
                 // THE RANDOM CHAMPIONSHIP: 500 draws. Each must use every playable circuit of
                 // the shipped rounds exactly once, keep the shipped sizes and needs, and run
-                // easy -> hard: rounds 1-2 easy, 3-4 medium, 6 and the final hard.
+                // easy -> hard. With all 24 circuits the English descriptions split 7/9/8;
+                // after stable-sorting each round the exact slices are:
+                //   3E, 3E, E+3M, 4M, 2M+2H, 5H, H.
                 bigred::TextTable english;
                 english.load(game_dir, "ENG");
                 std::vector<std::pair<std::string, int>> pd;
@@ -1303,6 +1363,18 @@ int main(int argc, char* argv[]) {
                 int n_easy = 0, n_med = 0, n_hard = 0, n_unknown = 0;
                 for (const auto& p : pd)
                     (p.second == 0 ? n_easy : p.second == 1 ? n_med : p.second == 2 ? n_hard : n_unknown)++;
+                check(pd.size() == 24, "random championship has all 24 playable circuits");
+                check(n_easy == 7 && n_med == 9 && n_hard == 8 && n_unknown == 0,
+                      "retail difficulty split is 7 easy, 9 medium, 8 hard");
+                static constexpr int expectedDifficulty[7][5] = {
+                    {0, 0, 0, -1, -1},
+                    {0, 0, 0, -1, -1},
+                    {0, 1, 1, 1, -1},
+                    {1, 1, 1, 1, -1},
+                    {1, 1, 2, 2, -1},
+                    {2, 2, 2, 2, 2},
+                    {2, -1, -1, -1, -1},
+                };
                 bigred::Championship ref;
                 ref.start(cat.rounds, playable);
                 int bad = 0;
@@ -1317,7 +1389,8 @@ int main(int argc, char* argv[]) {
                         const bigred::TournRound& cr = c.round_list()[static_cast<size_t>(r)];
                         const bigred::TournRound& rr = ref.round_list()[static_cast<size_t>(r)];
                         ok = cr.levels.size() == rr.levels.size() && cr.need == rr.need;
-                        for (const std::string& l : cr.levels) {
+                        for (std::size_t i = 0; ok && i < cr.levels.size(); ++i) {
+                            const std::string& l = cr.levels[i];
                             int d = -1;
                             for (const auto& p : pd)
                                 if (p.first == l) d = p.second;
@@ -1325,10 +1398,10 @@ int main(int argc, char* argv[]) {
                             last = d;
                             if (std::find(seen.begin(), seen.end(), l) != seen.end()) ok = false;
                             seen.push_back(l);
-                            const int want = r < 2 ? 0 : r < 4 ? 1 : r == 4 ? -1 : 2;
-                            if (want >= 0 && d != want) ok = false;
+                            if (i >= 5 || d != expectedDifficulty[r][i]) ok = false;
                         }
                     }
+                    if (seen.size() != playable.size()) ok = false;
                     if (!ok) ++bad;
                     if (seed == 1)
                         for (const bigred::TournRound& cr : c.round_list()) {
@@ -1340,10 +1413,28 @@ int main(int argc, char* argv[]) {
                 std::printf("  tirage : %d facile(s), %d moyen(s), %d difficile(s), %d inconnu(s) ; "
                             "500 tirages, %d fautif(s)\n  exemple :%s\n",
                             n_easy, n_med, n_hard, n_unknown, bad, sample.c_str());
+                check(bad == 0, "500 seeded random championships match the retail slices");
             }
-            play("toujours premier", [](int, int) { return 1; });
-            play("toujours deuxieme", [](int, int) { return 2; });
-            play("perd la 1re course de chaque manche", [](int, int k) { return k == 0 ? 3 : 1; });
+
+            using Outcome = bigred::Championship::Outcome;
+            play("toujours premier", [](int, int) { return 1; }, 12, 6, true,
+                 {Outcome::NextRound, Outcome::NextRound, Outcome::NextRound,
+                  Outcome::NextRound, Outcome::NextRound, Outcome::NextRound,
+                  Outcome::Champion});
+            play("toujours deuxieme", [](int, int) { return 2; }, 3, 0, false,
+                 {Outcome::Eliminated});
+            play("perd la 1re course de chaque manche", [](int, int k) { return k == 0 ? 3 : 1; },
+                 18, 6, false,
+                 {Outcome::NextRound, Outcome::NextRound, Outcome::NextRound,
+                  Outcome::NextRound, Outcome::NextRound, Outcome::NextRound,
+                  Outcome::Eliminated});
+
+            if (failures) {
+                std::printf("CHAMPIONNAT FAIL: %d championship regression(s)\n", failures);
+                return 1;
+            }
+            std::printf("CHAMPIONNAT PASS: 24 tracks, 7 authored rounds, 3 outcome scenarios, "
+                        "500 random draws\n");
             std::printf("\n");
         }
 
@@ -5531,6 +5622,51 @@ int main(int argc, char* argv[]) {
             std::printf("      tunnel flag set on %d of 600 ticks driving straight ahead\n",
                         inside);
         }
+    }
+
+    if (bloc("COMFORT_CAMERA")) {
+        // Synthetic geometry: the executable's ordinary level load is shared with
+        // the bench, but no authored collision placement determines these results.
+        std::vector<uint8_t> flat(64*64,0);
+        bigred::SimTerrain world;
+        world.w=world.h=64;
+        world.mph=flat.data(); world.mpc=flat.data();
+        world.build_blocker_grid();
+        using bigred::CameraPoint;
+        const CameraPoint focus{2000,-200,2000}, eye{2000,-200,600};
+        auto require=[](bool ok,const char* label) {
+            if (!ok) std::fprintf(stderr,"COMFORT_CAMERA: %s\n",label);
+            return ok;
+        };
+        if (!require(bigred::camera_arm_fraction(world,focus,eye)==1,"clear boom retracts")) return 1;
+        const CameraPoint buried{2000,200,600};
+        const double ground_fraction=bigred::camera_arm_fraction(world,focus,buried);
+        if (!require(ground_fraction>0 && ground_fraction<1 &&
+                     focus.y+(buried.y-focus.y)*ground_fraction+16<=0,
+                     "ground collision leaves eye underground")) return 1;
+        bigred::SimObject wall;
+        wall.blocker=wall.hard=wall.use_box=true;
+        wall.x=2000; wall.z=1300; wall.y=0; wall.radius=1000;
+        wall.box_xmin=-500; wall.box_xmax=500;
+        wall.box_zmin=-20; wall.box_zmax=20;
+        wall.y_top=-1000; wall.y_bottom=1000;
+        world.blockers.push_back(wall);
+        world.build_blocker_grid();
+        const double wall_fraction=bigred::camera_arm_fraction(world,focus,eye);
+        if (!require(wall_fraction>.1 && wall_fraction<.5 &&
+                     focus.z+(eye.z-focus.z)*wall_fraction>1336,
+                     "boom passes through wall")) return 1;
+        if (!require(bigred::camera_arm_fraction(world,{2000,-1200,2000},{2000,-1200,600})==1,
+                     "camera above wall is falsely blocked")) return 1;
+        // Below a floating obstacle: vehicle contacts' vertical gate alone lacks this test.
+        world.blockers[0].y_top=-1000; world.blockers[0].y_bottom=-500;
+        if (!require(bigred::camera_arm_fraction(world,focus,eye)==1,
+                     "camera below obstacle is falsely blocked")) return 1;
+        world.blockers[0].hard=false;
+        world.blockers[0].y_bottom=1000;
+        if (!require(bigred::camera_arm_fraction(world,focus,eye)==1,
+                     "soft prop blocks camera")) return 1;
+        std::puts("COMFORT_CAMERA: ground, hard wall, vertical bounds and soft props passed");
     }
 
     for (const std::string& name : g_blocs_wanted) {

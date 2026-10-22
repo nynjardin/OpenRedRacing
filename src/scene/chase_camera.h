@@ -5,8 +5,8 @@
 //
 //   * it runs on the SAME 28 ms tick as the physics, never on the rendered frame. The original
 //     gates its update on the very same parity
-//     counter that halves the 14 ms timer for the handling. A camera smoothed per frame frames
-//     a different game at 30 fps than at 240;
+//     counter that halves the 14 ms timer for the handling. Display interpolation is separate
+//     and never feeds back into this controller;
 //   * the "camera lag" is not a smoothing constant, and there is nothing to tune. The camera
 //     only ever moves ALONG the line to the vehicle, and only when that line is too long. It
 //     never slides sideways. So when the car turns, the camera stays put and the car swings out
@@ -21,6 +21,7 @@
 #pragma once
 
 #include "../sim/vehicle.h"
+#include "camera_sample.h"
 
 #include <cstdint>
 
@@ -115,6 +116,7 @@ struct CameraView {
 };
 CameraView camera_view(const CameraState& prev, const CameraState& cur, float alpha, int map_w,
                        float render_scale);
+CameraView camera_view(const CameraSample& sample, int map_w, float render_scale);
 
 // THE CABIN VIEW - camera mode 1. The eye sits at the
 // vehicle's `internal` offset, turned with the vehicle; the view keeps its heading, and its pitch

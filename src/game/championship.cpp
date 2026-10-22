@@ -15,9 +15,8 @@ void Championship::start(const std::vector<TournRound>& rounds,
             if (std::find(playable.begin(), playable.end(), l) != playable.end())
                 kept.levels.push_back(l);
         if (kept.levels.empty()) continue;
-        // ⚠️ ÉCART ASSUMÉ: round 0 names RUF1, which does not load. Without the cap a round
-        // whose `need` counts a missing circuit could become unwinnable; in the shipped file it
-        // never does (every round keeps at least `need` playable circuits), so this is a guard.
+        // Incomplete installations can omit circuits. Keep their filtered
+        // round winnable; a complete retail installation retains every track.
         if (kept.need > static_cast<int>(kept.levels.size()))
             kept.need = static_cast<int>(kept.levels.size());
         if (kept.need < 1) kept.need = 1;

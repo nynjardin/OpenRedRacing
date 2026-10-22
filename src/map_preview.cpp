@@ -410,9 +410,8 @@ int main(int argc, char* argv[]) {
                 // Live level switch (user-requested), cycling through every `.LEV` found in
                 // game_dir at startup (see available_levels above) - lets you compare multiple
                 // maps (e.g. MOON1/2/3) without relaunching the exe. Wraps at both ends (modulo
-                // below) - and, since not every `.LEV` in this install actually has everything
-                // `load_level` needs (e.g. `RUF1.LEV` is missing MAP.MPH/MPC/COL - confirmed via
-                // a temporary in-process test that walked this exact formula), keeps stepping
+                // below) - and, since an incomplete install can lack data that
+                // `load_level` needs, keeps stepping
                 // in the requested direction past any level that fails to load instead of
                 // getting stuck retrying it forever. Capped at one full lap so a
                 // completely-broken install can't spin forever.

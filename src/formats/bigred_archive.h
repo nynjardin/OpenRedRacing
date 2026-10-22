@@ -6,7 +6,8 @@
 // C++ port of tools/bigred_archive.py (itself a port of research/red-archive's unpack()).
 // Format: sequential entries with no header, each `name\0` + 4-byte compressed size (LE) +
 // 4-byte uncompressed size (LE) + 1-byte compression type + compressed data.
-// Compression type 0 = raw, 1 = RLE, 2-6 = LZSS variants (offset bits = 6 - type).
+// Compression type 0 = raw (sizes must match), 1 = RLE, 2-6 = LZSS variants
+// (offset bits = 6 - type).
 #pragma once
 
 #include <cstdint>
@@ -19,7 +20,8 @@ namespace bigred {
 using Blob = std::vector<uint8_t>;
 
 // Unpacks raw archive bytes into {filename: file_data}. Throws std::runtime_error on any
-// format inconsistency (unsupported compression type, truncated data, bad LZSS stream).
+// format inconsistency (unsupported compression type, truncated data, declared-size overflow,
+// or a malformed LZSS/RLE stream). Every chunk and decompressed write is bounds checked.
 std::unordered_map<std::string, Blob> unpack_bytes(const uint8_t* data, size_t size);
 
 // Unpacks any archive file. Under the game directory, use game_archive() (game_files.h) instead:

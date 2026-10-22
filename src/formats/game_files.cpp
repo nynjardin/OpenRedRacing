@@ -1,10 +1,13 @@
 #include "formats/game_files.h"
+#include "formats/terrain_members.h"
 
 #include <algorithm>
 #include <cctype>
 #include <deque>
 #include <iterator>
 #include <mutex>
+#include <sstream>
+#include <stdexcept>
 #include <vector>
 
 #ifdef _WIN32
@@ -115,6 +118,30 @@ bool is_level(const std::string& file) {
     return ext == ".LEV";
 }
 
+std::string declared_map_stem(const Archive& archive, const std::string& file) {
+    const auto slash = file.find_last_of("/\\");
+    std::string script = file.substr(slash == std::string::npos ? 0 : slash + 1);
+    script = script.substr(0, script.find_last_of('.')) + ".TXT";
+    for (char& c : script) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    const Blob* bytes = find_member(archive, script);
+    if (!bytes) return {};
+    std::istringstream lines(std::string(bytes->begin(), bytes->end()));
+    std::string line, stem;
+    while (std::getline(lines, line)) {
+        const auto comment = std::min(line.find(';'), line.find("//"));
+        if (comment != std::string::npos) line.erase(comment);
+        std::istringstream words(line);
+        std::string key, value;
+        if (!(words >> key)) continue;
+        for (char& c : key) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (key == "map") {
+            if (!(words >> value)) throw std::runtime_error(script + ": map needs a member stem");
+            stem = std::move(value);
+        }
+    }
+    return stem;
+}
+
 } // namespace
 
 ArchivePtr game_archive(const std::string& game_dir, const std::string& file) {
@@ -126,7 +153,14 @@ ArchivePtr game_archive(const std::string& game_dir, const std::string& file) {
     }
     // Unpacked outside the lock: two threads asking for the same archive at once both unpack
     // it and the second one's copy is dropped, which costs time but not correctness.
-    auto archive = std::make_shared<const Archive>(unpack_file(path));
+    Archive members = unpack_file(path);
+    if (is_level(file)) {
+        TerrainMemberSelection terrain;
+        std::string error;
+        if (!normalize_terrain_members(members, terrain, error, declared_map_stem(members, file)))
+            throw std::runtime_error(file + ": " + error);
+    }
+    auto archive = std::make_shared<const Archive>(std::move(members));
     std::lock_guard<std::mutex> lock(g_mutex);
     auto [it, inserted] = g_archives.emplace(path, archive);
     if (inserted && is_level(file)) {

@@ -21,6 +21,7 @@
 #include "game/split_layout.h"
 #include "net/net_game.h"
 #include "scene/character_model.h"
+#include "scene/camera_obstruction.h"
 #include "sim/lockstep.h"
 #include "sim/snapshot.h"
 #include "ui/team_logos.h"
@@ -74,6 +75,8 @@ bool RaceScreen::enter(App& app) {
     for (LocalView& v : views_) {
         v.camera.reset(session_.car(v.racer), level_.terrain);
         v.cam_prev = v.camera.now;
+        v.comfort_camera = ComfortCamera{};
+        v.comfort_cut_pending = true;
         if (setup_.start_in_cabin) {
             v.camera.preset = 2;   // where `C` leaves it on the way into the cabin
             v.cabin = true;
@@ -425,7 +428,7 @@ bool RaceScreen::load_world(App& app) {
                                      1, scene_, setup_.tinted ? &setup_.tint : nullptr,
                                      logo.valid() ? &logo : nullptr,
                                      driver_for(setup_.character, setup_.character_colour, true, me));
-    // Every other racer's body. A ghost in its recording's team repaint (header byte 28,
+    // Every other racer's body. A ghost in its recording's team repaint (header byte 31,
     // sim/replay.h); another human in the colour and emblem they announced in the lobby.
     // Before the atlas upload, like the player's.
     TeamLogos team_logos;
@@ -477,12 +480,15 @@ bool RaceScreen::load_world(App& app) {
                 gs.tinted ? &gs.tint : nullptr, theirs.valid() ? &theirs : nullptr,
                 driver_for(gs.character, gs.character_colour, true, them));
         } else {
-            // A recorded opponent: one of the six drivers by grid slot, in the head's own
-            // authored colours - the recordings do not say who was driving.
+            // A recorded opponent: its head is the recording's person byte. Keep the head's
+            // authored colours; the team/body colour is carried separately through field_.colour.
+            const int character = field_.tracks[si].valid()
+                                      ? field_.tracks[si].character
+                                      : i % kCharacterCount;
             Driver them;
             ghost_models_[si] = build_vehicle_model(
                 *field_.vhc[si], *ingame_, field_.tunings[si], field_.colour[si] + 1, scene_,
-                nullptr, nullptr, driver_for(i % kCharacterCount, 0, false, them));
+                nullptr, nullptr, driver_for(character, 0, false, them));
         }
     }
     // THE CABINS, one per local player, in their car's colour: the interior (`vehicle IN_...`,
@@ -672,7 +678,8 @@ void RaceScreen::update(App& app, double dt_ms) {
     // Fixed-timestep simulation: the vehicle and the camera, and everything else that will ever
     // move, run an exact whole number of times per second of wall clock, identically on every
     // machine. The DISPLAY then interpolates between the last two ticks, which is what makes
-    // 30 fps and 240 fps show the same motion rather than the same code at two speeds.
+    // 30 fps and 240 fps show the same motion rather than the same code at two speeds. (The
+    // optional comfort rig is presentation only: it follows the drawn poses on the render clock.)
     wall_ms_ += dt_ms;
 
     // ⚠️ A FLY-BY RUNS NO SIMULATION AT ALL. There is no vehicle to step, no input to read
@@ -821,6 +828,30 @@ void RaceScreen::update(App& app, double dt_ms) {
     views_[0].place(view_prev(), view_now(), alpha_, scene_.map_w);
     for (size_t i = 1; i < views_.size(); ++i)
         views_[i].place(views_[i].cam_prev, views_[i].camera.now, alpha_, scene_.map_w);
+    // -CAMERA=COMFORT replaces the chase views (not the trackside one) with the comfort rig,
+    // which follows exactly the pose being drawn, network visual correction included.
+    if (app.comfort_camera() && !setup_.fly_by) {
+        for (size_t i = 0; i < views_.size(); ++i) {
+            if (i == 0 && spectator_.active()) continue;
+            LocalView& v = views_[i];
+            const int watched = v.watch >= 0 ? v.watch : v.racer;
+            // Use exactly the pose being drawn, including network visual correction.
+            const VehiclePose pose = shown_pose(watched);
+            bool confined = session_.car(watched).in_tunnel;
+            if (v.comfort_camera.ready() && !v.comfort_cut_pending) {
+                const CameraSample& eye = v.comfort_camera.current();
+                confined = confined || camera_under_roof(level_.terrain, {eye.x, eye.y, eye.z});
+            }
+            const ComfortTarget target{{pose.x, pose.y, pose.z}, pose.yaw,
+                                       v.camera.preset, confined};
+            const CameraSample sample = v.comfort_camera.update(target, dt_ms / 1000.0,
+                v.comfort_cut_pending, [this](CameraPoint focus, CameraPoint eye) {
+                    return camera_arm_fraction(level_.terrain, focus, eye);
+                });
+            v.comfort_cut_pending = false;
+            v.place(camera_view(sample, scene_.map_w, kRenderScale));
+        }
+    }
     for (size_t i = 0; i < views_.size(); ++i) place_cabin(views_[i], i == 0 && spectator_.active());
 }
 
@@ -953,7 +984,10 @@ int RaceScreen::local_seat_of(int racer) const {
 
 void RaceScreen::LocalView::place(const CameraState& prev, const CameraState& now, float alpha,
                                   int map_w) {
-    const CameraView v = camera_view(prev, now, alpha, map_w, kRenderScale);
+    place(camera_view(prev, now, alpha, map_w, kRenderScale));
+}
+
+void RaceScreen::LocalView::place(const CameraView& v) {
     cam_pos = {v.eye[0], v.eye[1], v.eye[2]};
     look = {v.forward[0], v.forward[1], v.forward[2]};
     right = {v.right[0], v.right[1], v.right[2]};
@@ -977,12 +1011,16 @@ void RaceScreen::follow(LocalView& v) {
     const int want = watch_for(v.racer);
     if (want != watch) {
         // The first call lands here too, and the camera is already behind its own car.
-        if (watch >= 0) cam.reset(session_.car(want), level_.terrain);
+        if (watch >= 0) {
+            cam.reset(session_.car(want), level_.terrain);
+            v.comfort_cut_pending = true;
+        }
         watch = want;
     } else if (session_.respawned(want)) {
         // A respawn re-enters camera mode 4 in the original, which re-plants the camera behind
         // the vehicle instead of letting the rope drag it across the whole map.
         cam.reset(session_.car(want), level_.terrain);
+        v.comfort_cut_pending = true;
     }
     cam.step(session_.car(want), level_.terrain);   // on the tick too - never on the frame
 

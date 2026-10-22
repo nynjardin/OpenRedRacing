@@ -28,6 +28,7 @@ Competition& App::competition() {
 }
 
 bool App::init(const Options& opts) {
+    comfort_camera_ = opts.comfort_camera;
     // ⚠️ GAMECONTROLLER, NOT JOYSTICK: SDL only raises SDL_CONTROLLERBUTTONDOWN/AXISMOTION for a
     // device opened as a game controller, and only a device SDL recognises as one at all - and
     // every menu must work with the pad as well as with the mouse. Its absence is not fatal: a
@@ -52,6 +53,7 @@ bool App::init(const Options& opts) {
 
     width_ = opts.width;
     height_ = opts.height;
+    hidden_ = opts.hidden;
     window_ = SDL_CreateWindow(opts.title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                width_, height_,
                                SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE |
@@ -61,6 +63,13 @@ bool App::init(const Options& opts) {
         SDL_Quit();
         return false;
     }
+    SDL_SetWindowMinimumSize(window_, 320, 200);
+    SDL_GetWindowSize(window_, &windowed_width_, &windowed_height_);
+    SDL_GetWindowPosition(window_, &windowed_x_, &windowed_y_);
+    have_windowed_bounds_ = true;
+    // Hidden captures must keep the exact canvas size requested by their tooling. A visible
+    // game can open directly into the monitor's desktop, which also covers borderless startup.
+    if (opts.borderless && !opts.hidden) set_borderless(true);
     gl_context_ = SDL_GL_CreateContext(window_);
     if (!gl_context_ || !gl::load()) {
         std::fprintf(stderr, "Failed to create a GL 3.3 context.\n");
@@ -217,6 +226,48 @@ void App::handle_controller_device_event(const SDL_Event& e) {
     }
 }
 
+void App::remember_windowed_bounds() {
+    if (!window_ || borderless_ || hidden_ ||
+        (SDL_GetWindowFlags(window_) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_FULLSCREEN |
+                                        SDL_WINDOW_FULLSCREEN_DESKTOP))) {
+        return;
+    }
+    SDL_GetWindowSize(window_, &windowed_width_, &windowed_height_);
+    SDL_GetWindowPosition(window_, &windowed_x_, &windowed_y_);
+    have_windowed_bounds_ = true;
+}
+
+bool App::set_borderless(bool borderless) {
+    if (!window_ || hidden_ || borderless_ == borderless) return true;
+
+    if (borderless) {
+        remember_windowed_bounds();
+        if (SDL_SetWindowFullscreen(window_, SDL_WINDOW_FULLSCREEN_DESKTOP) != 0) {
+            std::fprintf(stderr, "SDL_SetWindowFullscreen failed: %s\n", SDL_GetError());
+            return false;
+        }
+        borderless_ = true;
+    } else {
+        if (SDL_SetWindowFullscreen(window_, 0) != 0) {
+            std::fprintf(stderr, "Leaving fullscreen failed: %s\n", SDL_GetError());
+            return false;
+        }
+        borderless_ = false;
+        if (have_windowed_bounds_) {
+            SDL_SetWindowSize(window_, windowed_width_, windowed_height_);
+            SDL_SetWindowPosition(window_, windowed_x_, windowed_y_);
+        }
+    }
+    SDL_GetWindowSize(window_, &width_, &height_);
+    if (gl_context_) {
+        SDL_GL_MakeCurrent(window_, gl_context_);
+        glViewport(0, 0, width_, height_);
+    }
+    std::printf("Window mode: %s\n", borderless ? "borderless fullscreen" : "windowed");
+    std::fflush(stdout);
+    return true;
+}
+
 namespace {
 
 SDL_GameControllerButton sdl_button(PadButton b) {
@@ -311,10 +362,16 @@ int App::run(std::unique_ptr<Screen> first) {
                 running_ = false;
                 break;
             }
-            if (e.type == SDL_WINDOWEVENT && e.window.event == SDL_WINDOWEVENT_RESIZED) {
-                width_ = e.window.data1;
-                height_ = e.window.data2;
-                glViewport(0, 0, width_, height_);
+            if (e.type == SDL_WINDOWEVENT) {
+                if (e.window.event == SDL_WINDOWEVENT_RESIZED ||
+                    e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                    width_ = e.window.data1;
+                    height_ = e.window.data2;
+                    glViewport(0, 0, width_, height_);
+                    remember_windowed_bounds();
+                } else if (e.window.event == SDL_WINDOWEVENT_MOVED) {
+                    remember_windowed_bounds();
+                }
             }
             if (e.type == SDL_CONTROLLERDEVICEADDED || e.type == SDL_CONTROLLERDEVICEREMOVED) {
                 handle_controller_device_event(e);
@@ -327,6 +384,11 @@ int App::run(std::unique_ptr<Screen> first) {
             // SDLK_EQUALS because that is the unshifted key `+` sits on.
             if (e.type == SDL_KEYDOWN && !e.key.repeat) {
                 const SDL_Keycode k = e.key.keysym.sym;
+                if ((k == SDLK_RETURN || k == SDLK_KP_ENTER) &&
+                    (e.key.keysym.mod & KMOD_ALT)) {
+                    set_borderless(!borderless_);
+                    continue;   // Alt+Enter belongs to the window, not the current screen
+                }
                 int delta = 0;
                 if (k == SDLK_PLUS || k == SDLK_EQUALS || k == SDLK_KP_PLUS) delta = 1;
                 if (k == SDLK_MINUS || k == SDLK_KP_MINUS || k == SDLK_UNDERSCORE) delta = -1;

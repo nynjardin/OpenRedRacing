@@ -95,7 +95,7 @@ bool build_race_field(const std::string& game_dir, const LevelScene& scene, cons
         colours[static_cast<size_t>(b)] = b % 6;
         auto rec = scene.lev.find(std::to_string(b) + ".REC");
         if (rec == scene.lev.end()) continue;
-        ReplayTrack t = parse_replay(rec->second);
+        ReplayTrack t = parse_replay(rec->second, b);
         if (!t.valid()) continue;
         // The block's dot keeps the colour of its recording even when a human takes it, so
         // the six dots stay six colours. (The original moves colours round by index;

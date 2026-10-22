@@ -37,6 +37,7 @@
 #include "render/mat4.h"
 #include "render/sky.h"
 #include "scene/chase_camera.h"
+#include "scene/comfort_camera.h"
 #include "scene/dashboard.h"
 #include "scene/level_scene.h"
 #include "scene/particle_render.h"
@@ -192,6 +193,8 @@ private:
         Controls controls = Controls::Everything;
         ChaseCamera camera;
         CameraState cam_prev{};
+        ComfortCamera comfort_camera;
+        bool comfort_cut_pending = true;
         VehicleInput input{};
         Mat4::Vec3 cam_pos{0.0f, 0.0f, 0.0f};
         Mat4::Vec3 look{0.0f, 0.0f, 1.0f};
@@ -212,6 +215,7 @@ private:
         bool cabin_look_set = false;
         // The eye, `alpha` of the way from camera `prev` to camera `now`.
         void place(const CameraState& prev, const CameraState& now, float alpha, int map_w);
+        void place(const CameraView& view);
     };
     std::vector<LocalView> views_;
     bool split() const { return views_.size() > 1; }
